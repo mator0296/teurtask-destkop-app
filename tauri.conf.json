@@ -7,7 +7,7 @@
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
     "devUrl": "http://localhost:5173",
-    "frontendDist": "../dist"
+    "frontendDist": "https://teurtask.com"
   },
   "app": {
     "windows": [
@@ -42,6 +42,11 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "resources": {
+      "icons/tray.png": "icons/tray.png",
+      "icons/tray-badge.png": "icons/tray-badge.png",
+      "icons/128x128.png": "icons/128x128.png"
+    }
   }
 }
