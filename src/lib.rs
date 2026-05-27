@@ -10,17 +10,28 @@ static TRAY_BADGE: &[u8] = include_bytes!("../icons/tray-badge.png");
 
 #[tauri::command]
 fn send_native_notification(app: tauri::AppHandle, title: String, body: String) {
-    let mut builder = app.notification().builder().title(&title).body(&body);
+    let icon_path = app
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|d| d.join("icons/128x128.png"))
+        .filter(|p| p.exists());
 
-    // Use the 128x128 icon bundled in resources for a crisp notification icon
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        let icon = resource_dir.join("icons/128x128.png");
-        if icon.exists() {
-            builder = builder.icon(icon.to_string_lossy().into_owned());
-        }
+    let result = if let Some(icon) = icon_path {
+        app.notification()
+            .builder()
+            .title(&title)
+            .body(&body)
+            .icon(icon.to_string_lossy().into_owned())
+            .show()
+    } else {
+        app.notification().builder().title(&title).body(&body).show()
+    };
+
+    // If icon caused failure, retry without icon
+    if result.is_err() {
+        let _ = app.notification().builder().title(&title).body(&body).show();
     }
-
-    let _ = builder.show();
 }
 
 #[tauri::command]

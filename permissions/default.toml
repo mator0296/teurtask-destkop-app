@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-send-native-notification"
+description = "Allow sending native OS notifications from the frontend."
+commands.allow = ["send_native_notification"]
+
+[[permission]]
+identifier = "allow-set-tray-badge"
+description = "Allow setting the tray icon badge."
+commands.allow = ["set_tray_badge"]

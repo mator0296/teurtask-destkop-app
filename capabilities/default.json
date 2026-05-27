@@ -3,8 +3,13 @@
   "identifier": "default",
   "description": "Default capability for teurtask desktop app",
   "windows": ["main"],
+  "remote": {
+    "urls": ["https://teurtask.com", "https://*.teurtask.com"]
+  },
   "permissions": [
     "core:default",
+    "allow-send-native-notification",
+    "allow-set-tray-badge",
     "notification:default",
     "deep-link:default"
   ]
