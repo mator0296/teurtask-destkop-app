@@ -87,5 +87,3 @@ Place a square 1024×1024 PNG logo at `public/img/icon.png` and run:
 ```
 npm run tauri icon public/img/icon.png
 ```
-
-<!-- sync test: 2026-08-18T22:46:57Z -->
