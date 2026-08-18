@@ -36,32 +36,30 @@ Outputs land in `src-tauri/target/release/bundle/`.
 
 ---
 
-## GitLab CI
+## CI/CD
 
-The `.gitlab-ci.yml` at the repo root triggers on git tags and produces:
-- **Linux:** `.deb` and `.AppImage`
-- **Windows:** `.exe` (NSIS installer) — cross-compiled from Linux via `cargo-xwin`
+This directory is a 1:1 mirror of [`teurtask-destkop-app`](https://github.com/mator0296/teurtask-destkop-app):
+`teurtask-frontend`'s GitLab pipeline (`sync:desktop-app` job) pushes every change under
+`src-tauri/**` on `main` to that repo via `git subtree push`. **Do not edit `.github/workflows/`
+directly on GitHub** — it would be overwritten (or break the sync) on the next push; change it
+here instead.
 
-Tag a release to trigger builds:
+Each push to `main` on the GitHub side triggers `.github/workflows/release.yml`, which builds
+Linux, Windows, and macOS (Apple Silicon) in parallel and publishes a GitHub Release tagged
+`v<version>` (read from `tauri.conf.json`). Permanent download links:
+
 ```
-git tag v1.9.0 && git push origin v1.9.0
+https://github.com/mator0296/teurtask-destkop-app/releases/latest/download/<asset>
 ```
 
-Artifacts are kept for 30 days under the pipeline's job artifacts.
+| OS | Assets |
+|---|---|
+| Linux | `.deb`, `.rpm`, `.AppImage` |
+| Windows | `.msi`, `-setup.exe` |
+| macOS | `.dmg` (Apple Silicon only) |
 
-**Required CI variable** (set in GitLab → Settings → CI/CD → Variables):
-- `VITE_API_BASE_URL` — defaults to `https://api.teurtask.com` in `.gitlab-ci.yml`
-
----
-
-## macOS build (local)
-
-macOS cannot be cross-compiled. Build on your Mac:
-```
-npm ci
-npm run tauri:build
-```
-Output: `src-tauri/target/release/bundle/dmg/` and `bundle/macos/`.
+To ship a new desktop build: bump `version` in `tauri.conf.json`, merge to `main` in
+`teurtask-frontend`, and the release publishes automatically — no manual steps.
 
 ---
 
