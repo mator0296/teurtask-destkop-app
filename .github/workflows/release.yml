@@ -35,15 +35,16 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.version.outputs.tag }}
         run: |
-          if ! gh api "repos/${{ github.repository }}/releases/tags/$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" \
-              --title "teurtask $TAG" \
-              --draft \
-              --target "${{ github.sha }}" \
-              --repo "${{ github.repository }}" \
-              --generate-notes
+          release_id=$(gh api "repos/${{ github.repository }}/releases/tags/$TAG" --jq .id 2>/dev/null || true)
+          if [ -z "$release_id" ]; then
+            release_id=$(gh api "repos/${{ github.repository }}/releases" \
+              -f tag_name="$TAG" \
+              -f target_commitish="${{ github.sha }}" \
+              -f name="teurtask $TAG" \
+              -F draft=true \
+              -F generate_release_notes=true \
+              --jq .id)
           fi
-          release_id=$(gh api "repos/${{ github.repository }}/releases/tags/$TAG" --jq .id)
           echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
 
   build-tauri:
