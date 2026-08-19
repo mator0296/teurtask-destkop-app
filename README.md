@@ -85,3 +85,4 @@ Place a square 1024×1024 PNG logo at `public/img/icon.png` and run:
 ```
 npm run tauri icon public/img/icon.png
 ```
+<!-- test: verify GitHub App sync job -->
