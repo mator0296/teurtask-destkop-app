@@ -35,15 +35,21 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.version.outputs.tag }}
         run: |
-          release_id=$(gh api "repos/${{ github.repository }}/releases/tags/$TAG" --jq .id 2>/dev/null || true)
-          if [ -z "$release_id" ]; then
-            release_id=$(gh api "repos/${{ github.repository }}/releases" \
+          # gh api escribe el body de error en stdout (no stderr) en respuestas
+          # no-2xx, asi que hay que decidir por codigo de salida, no por si la
+          # variable quedo vacia -- de lo contrario el JSON de error termina
+          # metido en $release_id (confirmado en vivo: releaseId recibido por
+          # tauri-action era literalmente {"message":"Not Found",...}).
+          if resp=$(gh api "repos/${{ github.repository }}/releases/tags/$TAG" 2>/dev/null); then
+            release_id=$(echo "$resp" | jq -r .id)
+          else
+            resp=$(gh api "repos/${{ github.repository }}/releases" \
               -f tag_name="$TAG" \
               -f target_commitish="${{ github.sha }}" \
               -f name="teurtask $TAG" \
               -F draft=true \
-              -F generate_release_notes=true \
-              --jq .id)
+              -F generate_release_notes=true)
+            release_id=$(echo "$resp" | jq -r .id)
           fi
           echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
 
