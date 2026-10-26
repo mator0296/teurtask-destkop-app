@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Merged by Tauri into the bundle's Info.plist. Without these keys macOS blocks the mic/camera. -->
+<plist version="1.0">
+<dict>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>TeurTask usa el micrófono para grabar notas de voz y reuniones.</string>
+  <key>NSCameraUsageDescription</key>
+  <string>TeurTask usa la cámara cuando la activas en una videollamada o grabación.</string>
+</dict>
+</plist>

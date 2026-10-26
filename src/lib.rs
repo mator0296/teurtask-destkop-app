@@ -44,7 +44,57 @@ fn set_tray_badge(app: tauri::AppHandle, has_notifications: bool) {
     }
 }
 
+// WebKitGTK ships with getUserMedia disabled and denies every permission request nobody
+// handles; wry does neither, so voice notes failed on Linux with "No se pudo acceder al
+// micrófono". Mic/camera are granted only to the teurtask origin (and the dev server).
+#[cfg(target_os = "linux")]
+fn enable_media_capture(window: &tauri::WebviewWindow) {
+    use webkit2gtk::{
+        glib::prelude::ObjectExt, PermissionRequestExt, SettingsExt, UserMediaPermissionRequest,
+        WebViewExt,
+    };
+
+    let _ = window.with_webview(|webview| {
+        let view = webview.inner();
+        if let Some(settings) = WebViewExt::settings(&view) {
+            settings.set_enable_media_stream(true);
+            settings.set_enable_mediasource(true);
+        }
+        view.connect_permission_request(|view, request| {
+            if !request.is::<UserMediaPermissionRequest>() {
+                return false;
+            }
+            let trusted = view.uri().is_some_and(|uri| {
+                let host = uri
+                    .split("://")
+                    .nth(1)
+                    .and_then(|rest| rest.split(['/', ':']).next())
+                    .unwrap_or("");
+                host == "teurtask.com"
+                    || host.ends_with(".teurtask.com")
+                    || (cfg!(debug_assertions) && host == "localhost")
+            });
+            if trusted {
+                request.allow();
+            } else {
+                request.deny();
+            }
+            true
+        });
+    });
+}
+
 pub fn run() {
+    // The DMA-BUF renderer of WebKitGTK paints a blank window on the NVIDIA proprietary driver.
+    // Turning off only that keeps GPU compositing; forcing software rendering (what the old
+    // launchers did) cost ~120 MB and every animation frame on the CPU.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none()
+        && std::path::Path::new("/proc/driver/nvidia").exists()
+    {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_notification::init())
@@ -188,6 +238,8 @@ pub fn run() {
 
             // Clear tray badge when the window receives focus
             let window = app.get_webview_window("main").unwrap();
+            #[cfg(target_os = "linux")]
+            enable_media_capture(&window);
             let app_handle = app.handle().clone();
             window.on_window_event(move |event| {
                 if let tauri::WindowEvent::Focused(true) = event {

@@ -81,6 +81,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
             librsvg2-dev patchelf libxdo-dev libssl-dev libgtk-3-dev build-essential
+          # bundleMediaFramework only copies the GStreamer plugins installed here: without
+          # libav/bad the AppImage cannot decode H.264/AAC (MP4 videos) nor record properly.
+          sudo apt-get install -y gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav \
+            gstreamer1.0-pulseaudio
 
       - uses: tauri-apps/tauri-action@v1
         env:

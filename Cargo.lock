@@ -3745,7 +3745,7 @@ dependencies = [
 
 [[package]]
 name = "teurtask"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -3753,6 +3753,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-deep-link",
  "tauri-plugin-notification",
+ "webkit2gtk",
 ]
 
 [[package]]

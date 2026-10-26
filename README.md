@@ -34,6 +34,23 @@ npm run tauri:build
 ```
 Outputs land in `src-tauri/target/release/bundle/`.
 
+### Measure resource usage (Linux)
+```
+src-tauri/scripts/resource-monitor.sh 60 2 /tmp/teurtask.csv   # seconds, interval, optional CSV
+```
+Samples CPU (per interval) and RSS of the app and its WebKit children (`web`, `network`) and
+prints avg/max per process. Measure with the window unfocused to see the idle cost.
+
+### Linux media notes
+- Mic/camera: WebKitGTK denies `getUserMedia` unless the app grants it; `enable_media_capture`
+  in `src/lib.rs` does it for the teurtask origin only.
+- Video/recording codecs come from GStreamer. The AppImage bundles the plugins installed on the
+  CI runner (see `release.yml`); the `.deb` depends on them. Without `gst-libav` there is no
+  H.264/AAC (MP4) playback, without `gst-plugins-good` no `MediaRecorder`.
+- NVIDIA: the app turns off only WebKit's DMA-BUF renderer (blank window bug). Do not launch it
+  with `LIBGL_ALWAYS_SOFTWARE=1` / `WEBKIT_DISABLE_COMPOSITING_MODE=1`: everything is then
+  painted on the CPU.
+
 ---
 
 ## CI/CD
