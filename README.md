@@ -113,7 +113,12 @@ xattr -dr com.apple.quarantine teurtask.app
 ```
 
 **Linux** — AppImage: `chmod +x teurtask_*.AppImage && ./teurtask_*.AppImage`
-         — Deb: `sudo dpkg -i teurtask_*.deb`
+         — Deb: `sudo apt install ./teurtask_*.deb` (`dpkg -i` skips the dependencies, e.g. `gstreamer1.0-libav`)
+         — Rpm: `sudo dnf install ./teurtask-*.rpm` / `sudo zypper install ./teurtask-*.rpm`
+
+On openSUSE use the `.rpm`: the AppImage's bundled GnuTLS only trusts
+`/etc/ssl/certs/ca-certificates.crt`, which openSUSE doesn't have, so it can't open HTTPS there
+(the app says so on start).
 
 ---
 

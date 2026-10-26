@@ -98,9 +98,7 @@ fn enable_media_capture(window: &tauri::WebviewWindow) {
 fn configure_linux_rendering() -> bool {
     use std::env;
 
-    if env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none()
-        && std::path::Path::new("/proc/driver/nvidia").exists()
-    {
+    if env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() && display_gpu_is_nvidia() {
         env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
 
@@ -108,6 +106,79 @@ fn configure_linux_rendering() -> bool {
     !(set("WEBKIT_DISABLE_DMABUF_RENDERER")
         || set("WEBKIT_DISABLE_COMPOSITING_MODE")
         || set("LIBGL_ALWAYS_SOFTWARE"))
+}
+
+// The DMA-BUF renderer draws on the GPU the Wayland compositor runs on, so a laptop whose screen is
+// driven by the Intel/AMD GPU keeps it even with the NVIDIA driver loaded (PRIME render offload):
+// /proc/driver/nvidia alone sent those to CPU painting. That GPU is the first one the compositor
+// was told to use, else the boot VGA device. X11 keeps the old rule: with `prime-select nvidia`
+// the X server renders on NVIDIA while boot_vga still names the Intel GPU.
+#[cfg(target_os = "linux")]
+fn display_gpu_is_nvidia() -> bool {
+    use std::{env, fs, path::Path};
+
+    if !Path::new("/proc/driver/nvidia").exists() {
+        return false;
+    }
+    if env::var_os("WAYLAND_DISPLAY").is_none()
+        || env::var("__NV_PRIME_RENDER_OFFLOAD").is_ok_and(|v| v == "1")
+    {
+        return true;
+    }
+
+    let drm = Path::new("/sys/class/drm");
+    let is_nvidia = |card: &Path| {
+        fs::read_to_string(card.join("device/vendor")).map(|vendor| vendor.trim() == "0x10de")
+    };
+    // Hyprland (aquamarine), wlroots and KWin take an ordered list of /dev/dri/cardN paths.
+    for key in ["AQ_DRM_DEVICES", "WLR_DRM_DEVICES", "KWIN_DRM_DEVICES"] {
+        let Some(first) = env::var(key).ok().and_then(|list| {
+            list.split(':')
+                .next()
+                .filter(|dev| !dev.is_empty())
+                .map(str::to_owned)
+        }) else {
+            continue;
+        };
+        if let Some(nvidia) = fs::canonicalize(first)
+            .ok()
+            .and_then(|dev| dev.file_name().map(|name| drm.join(name)))
+            .and_then(|card| is_nvidia(&card).ok())
+        {
+            return nvidia;
+        }
+    }
+    let boot_vga = fs::read_dir(drm).ok().and_then(|cards| {
+        cards.flatten().map(|card| card.path()).find(|card| {
+            fs::read_to_string(card.join("device/boot_vga")).is_ok_and(|flag| flag.trim() == "1")
+        })
+    });
+    boot_vga.map_or(true, |card| is_nvidia(&card).unwrap_or(true))
+}
+
+// The AppImage carries Ubuntu's GnuTLS, which only trusts /etc/ssl/certs/ca-certificates.crt (the
+// path is compiled in; no variable overrides it). openSUSE keeps its bundle in /etc/ssl/ca-bundle.pem,
+// so every HTTPS load fails with "Unacceptable TLS certificate" and the window stays blank. The .rpm
+// uses the system's TLS and works there, so the user is pointed at it.
+#[cfg(target_os = "linux")]
+fn warn_if_appimage_cannot_verify_tls(app: &tauri::AppHandle) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+
+    if std::env::var_os("APPIMAGE").is_none()
+        || std::path::Path::new("/etc/ssl/certs/ca-certificates.crt").exists()
+    {
+        return;
+    }
+    app.dialog()
+        .message(
+            "Esta distribución guarda los certificados de seguridad en una ruta que la versión \
+             AppImage de TeurTask no reconoce, así que no puede conectarse.\n\n\
+             Instala el paquete .rpm (o .deb) desde \
+             https://github.com/mator0296/teurtask-destkop-app/releases/latest",
+        )
+        .title("TeurTask no puede conectarse")
+        .kind(MessageDialogKind::Warning)
+        .show(|_| {});
 }
 
 pub fn run() {
@@ -270,7 +341,10 @@ pub fn run() {
             // Clear tray badge when the window receives focus
             let window = app.get_webview_window("main").unwrap();
             #[cfg(target_os = "linux")]
-            enable_media_capture(&window);
+            {
+                enable_media_capture(&window);
+                warn_if_appimage_cannot_verify_tls(app.handle());
+            }
             let app_handle = app.handle().clone();
             window.on_window_event(move |event| {
                 if let tauri::WindowEvent::Focused(true) = event {
