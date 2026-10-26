@@ -21,6 +21,8 @@ tauri-plugin-deep-link = "2"
 tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tauri-plugin-updater = "2"
+tauri-plugin-dialog = "2"
 
 # Same version wry pins; used to enable getUserMedia on WebKitGTK (see enable_media_capture).
 [target.'cfg(target_os = "linux")'.dependencies]

@@ -78,8 +78,26 @@ https://github.com/mator0296/teurtask-destkop-app/releases/latest/download/<asse
 | Windows | `.msi`, `-setup.exe` |
 | macOS | `.dmg` (Apple Silicon only) |
 
-To ship a new desktop build: bump `version` in `tauri.conf.json`, merge to `main` in
-`teurtask-frontend`, and the release publishes automatically — no manual steps.
+To ship a new desktop build: bump `version` in `tauri.conf.json` (and `Cargo.toml`), merge to
+`main` in `teurtask-frontend`, and the release publishes automatically — no manual steps. Always
+bump it: installed apps only update to a higher version, and the workflow reuses the release of
+an existing tag.
+
+Only changes under `src-tauri/` need a new build. The app loads `https://teurtask.com`, so web
+changes reach every installed app with the Vercel deploy.
+
+### In-app updates
+
+Since 1.9.1 the app checks `releases/latest/download/latest.json` 20 s after starting and every
+6 h (`src/updater.rs`). It downloads the update in the background and asks before restarting.
+Supported: AppImage (replaces the file), `.deb`/`.rpm` (installs through `pkexec`), Windows
+(passive installer) and macOS (`.app`). Debug builds never update.
+
+Updates are signed with a Tauri key (minisign, not an OS code-signing certificate). The public
+key is `plugins.updater.pubkey` in `tauri.conf.json`; the private key and its password are the
+`TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` secrets of the GitHub repo.
+Without them the release build fails. **If the private key is lost, installed apps can no longer
+be updated**: they would need one last manual install of a build with a new public key.
 
 ---
 

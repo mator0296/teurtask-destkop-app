@@ -5,6 +5,9 @@ use tauri::{
 };
 use tauri_plugin_notification::NotificationExt;
 
+#[cfg(not(debug_assertions))]
+mod updater;
+
 static TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
 static TRAY_BADGE: &[u8] = include_bytes!("../icons/tray-badge.png");
 
@@ -124,6 +127,8 @@ pub fn run() {
         .plugin(desktop_env)
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![set_tray_badge, send_native_notification])
         .setup(|app| {
             // ── Window menu ──────────────────────────────────────────────
@@ -282,6 +287,9 @@ pub fn run() {
                 let window = app.get_webview_window("main").unwrap();
                 window.open_devtools();
             }
+            // Dev builds are not released, so they never update themselves.
+            #[cfg(not(debug_assertions))]
+            updater::spawn(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())
