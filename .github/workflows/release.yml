@@ -86,6 +86,11 @@ jobs:
           sudo apt-get install -y gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
             gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav \
             gstreamer1.0-pulseaudio
+          # MIDI synth and ASCII-art video sinks, never used by the webview. They pull in
+          # libreadline/libtinfo, which the AppImage would put on LD_LIBRARY_PATH for every
+          # shell the app spawns (xdg-open, relaunch): Arch's bash then dies with
+          # "undefined symbol: rl_trim_arg_from_keyseq".
+          sudo rm -f /usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgst{fluidsynthmidi,aasink,cacasink}.so
 
       - uses: tauri-apps/tauri-action@v1
         env:

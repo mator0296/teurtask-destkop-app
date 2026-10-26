@@ -48,5 +48,41 @@ async fn check_and_offer(app: &AppHandle) -> tauri_plugin_updater::Result<()> {
 
     // On Windows this hands over to the installer, which relaunches the app itself.
     update.install(bytes)?;
+    #[cfg(target_os = "linux")]
+    if let Some(appimage) = std::env::var_os("APPIMAGE") {
+        relaunch_appimage(&appimage);
+        app.exit(0);
+        return Ok(());
+    }
     app.restart();
+}
+
+// The AppImage's AppRun points LD_LIBRARY_PATH, PATH, GTK_*, GST_*… at its own mount. A plain
+// restart hands them to the new AppImage, whose hooks then run the host bash against the bundled
+// (older) libreadline and die before the app starts ("undefined symbol: rl_trim_arg_from_keyseq"
+// on Arch). So every entry under the old mount is dropped; the new AppRun sets its own.
+#[cfg(target_os = "linux")]
+fn relaunch_appimage(appimage: &std::ffi::OsStr) {
+    let appdir = std::env::var("APPDIR").unwrap_or_default();
+    let mut cmd = std::process::Command::new(appimage);
+    cmd.env_clear();
+    for (key, value) in std::env::vars_os() {
+        match value.to_str() {
+            Some(text) if !appdir.is_empty() && text.contains(&appdir) => {
+                let kept: Vec<&str> = text
+                    .split(':')
+                    .filter(|part| !part.is_empty() && !part.starts_with(&appdir))
+                    .collect();
+                if !kept.is_empty() {
+                    cmd.env(key, kept.join(":"));
+                }
+            }
+            _ => {
+                cmd.env(key, value);
+            }
+        }
+    }
+    if let Err(err) = cmd.spawn() {
+        eprintln!("updater: relaunch failed: {err}");
+    }
 }
