@@ -47,9 +47,12 @@ prints avg/max per process. Measure with the window unfocused to see the idle co
 - Video/recording codecs come from GStreamer. The AppImage bundles the plugins installed on the
   CI runner (see `release.yml`); the `.deb` depends on them. Without `gst-libav` there is no
   H.264/AAC (MP4) playback, without `gst-plugins-good` no `MediaRecorder`.
-- NVIDIA: the app turns off only WebKit's DMA-BUF renderer (blank window bug). Do not launch it
-  with `LIBGL_ALWAYS_SOFTWARE=1` / `WEBKIT_DISABLE_COMPOSITING_MODE=1`: everything is then
-  painted on the CPU.
+- NVIDIA: the app turns off WebKit's DMA-BUF renderer (blank window on X11, protocol error or
+  web process abort on Wayland). Do not launch it with `LIBGL_ALWAYS_SOFTWARE=1` /
+  `WEBKIT_DISABLE_COMPOSITING_MODE=1`: everything is then painted on the CPU.
+- Liquid glass: `backdrop-filter` is only painted by the DMA-BUF renderer. When it is off the app
+  sets `window.__TEURTASK_DESKTOP__.backdropBlur = false` and the web app makes the glass tokens
+  near-opaque (`no-backdrop-blur` in `chatTheme.css`).
 
 ---
 

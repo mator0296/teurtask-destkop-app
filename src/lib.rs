@@ -84,18 +84,44 @@ fn enable_media_capture(window: &tauri::WebviewWindow) {
     });
 }
 
-pub fn run() {
-    // The DMA-BUF renderer of WebKitGTK paints a blank window on the NVIDIA proprietary driver.
-    // Turning off only that keeps GPU compositing; forcing software rendering (what the old
-    // launchers did) cost ~120 MB and every animation frame on the CPU.
-    #[cfg(target_os = "linux")]
-    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none()
+// Picks the WebKitGTK renderer for this session and returns whether `backdrop-filter` will be
+// painted (only the GPU-composited DMA-BUF renderer does it; otherwise the glass panels are bare
+// see-through). On the NVIDIA proprietary driver that renderer is not usable: on X11 (which the
+// AppImage forces) it paints a blank window, on Wayland it dies with "Error 71 (Protocol error)"
+// and, with explicit sync turned off, the web process aborts as soon as a backdrop-filter panel
+// opens. So NVIDIA gets it turned off and the page falls back to opaque glass. Forcing software
+// rendering (what the old launchers did) cost ~120 MB and every animation frame on the CPU.
+#[cfg(target_os = "linux")]
+fn configure_linux_rendering() -> bool {
+    use std::env;
+
+    if env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none()
         && std::path::Path::new("/proc/driver/nvidia").exists()
     {
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
 
+    let set = |key| env::var(key).is_ok_and(|v| v != "0");
+    !(set("WEBKIT_DISABLE_DMABUF_RENDERER")
+        || set("WEBKIT_DISABLE_COMPOSITING_MODE")
+        || set("LIBGL_ALWAYS_SOFTWARE"))
+}
+
+pub fn run() {
+    #[cfg(target_os = "linux")]
+    let backdrop_blur = configure_linux_rendering();
+    #[cfg(not(target_os = "linux"))]
+    let backdrop_blur = true;
+
+    // Read by the web app (utils/desktopEnv.js) before it renders.
+    let desktop_env = tauri::plugin::Builder::<tauri::Wry>::new("desktop-env")
+        .js_init_script(format!(
+            "window.__TEURTASK_DESKTOP__ = {{ backdropBlur: {backdrop_blur} }};"
+        ))
+        .build();
+
     tauri::Builder::default()
+        .plugin(desktop_env)
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![set_tray_badge, send_native_notification])
