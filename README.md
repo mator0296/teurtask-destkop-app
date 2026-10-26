@@ -51,8 +51,8 @@ prints avg/max per process. Measure with the window unfocused to see the idle co
   web process abort on Wayland). Do not launch it with `LIBGL_ALWAYS_SOFTWARE=1` /
   `WEBKIT_DISABLE_COMPOSITING_MODE=1`: everything is then painted on the CPU.
 - Liquid glass: `backdrop-filter` is only painted by the DMA-BUF renderer. When it is off the app
-  sets `window.__TEURTASK_DESKTOP__.backdropBlur = false` and the web app makes the glass tokens
-  near-opaque (`no-backdrop-blur` in `chatTheme.css`).
+  sets `window.__TEURTASK_DESKTOP__.backdropBlur = false` and the web app turns the glass into solid
+  surfaces without the filter (`no-backdrop-blur` in `chatTheme.css`).
 
 ---
 
