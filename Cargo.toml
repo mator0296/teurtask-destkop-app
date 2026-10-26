@@ -27,6 +27,7 @@ tauri-plugin-dialog = "2"
 # Same version wry pins; used to enable getUserMedia on WebKitGTK (see enable_media_capture).
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = { version = "=2.0.2", features = ["v2_38"] }
+libc = "0.2"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

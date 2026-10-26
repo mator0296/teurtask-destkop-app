@@ -4160,6 +4160,7 @@ dependencies = [
 name = "teurtask"
 version = "1.9.1"
 dependencies = [
+ "libc",
  "serde",
  "serde_json",
  "tauri",

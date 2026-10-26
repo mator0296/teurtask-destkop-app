@@ -82,6 +82,20 @@ fn relaunch_appimage(appimage: &std::ffi::OsStr) {
             }
         }
     }
+    // WebKit and the AppImage runtime leave descriptors without CLOEXEC (one of them on the old
+    // mount), which would keep the old runtime and its FUSE mount alive as long as the new app runs.
+    // SAFETY: only async-signal-safe syscalls between fork and exec.
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| {
+            if libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32) != 0 {
+                (3..1024).for_each(|fd| {
+                    libc::close(fd);
+                });
+            }
+            Ok(())
+        });
+    }
     if let Err(err) = cmd.spawn() {
         eprintln!("updater: relaunch failed: {err}");
     }
