@@ -181,7 +181,24 @@ fn warn_if_appimage_cannot_verify_tls(app: &tauri::AppHandle) {
         .show(|_| {});
 }
 
+// Browser screen recordings (MediaRecorder WebM, e.g. the meet tracker's) flag their VP8 track as
+// having alpha without carrying any. decodebin then picks vp8alphadecodebin, which waits forever
+// for the alpha frames: the video never gets past "loading" (readyState 0). Ranked out, the plain
+// vp8dec/vp9dec decode them; a truly transparent WebM loses its transparency, nothing else.
+// Entries already in the variable come after, so they still win.
+#[cfg(target_os = "linux")]
+fn configure_gstreamer() {
+    const RANKS: &str = "vp8alphadecodebin:0,vp9alphadecodebin:0";
+    let ranks = match std::env::var("GST_PLUGIN_FEATURE_RANK") {
+        Ok(user) if !user.is_empty() => format!("{RANKS},{user}"),
+        _ => RANKS.to_owned(),
+    };
+    std::env::set_var("GST_PLUGIN_FEATURE_RANK", ranks);
+}
+
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    configure_gstreamer();
     #[cfg(target_os = "linux")]
     let backdrop_blur = configure_linux_rendering();
     #[cfg(not(target_os = "linux"))]
