@@ -57,45 +57,11 @@ async fn check_and_offer(app: &AppHandle) -> tauri_plugin_updater::Result<()> {
     app.restart();
 }
 
-// The AppImage's AppRun points LD_LIBRARY_PATH, PATH, GTK_*, GST_*… at its own mount. A plain
-// restart hands them to the new AppImage, whose hooks then run the host bash against the bundled
-// (older) libreadline and die before the app starts ("undefined symbol: rl_trim_arg_from_keyseq"
-// on Arch). So every entry under the old mount is dropped; the new AppRun sets its own.
+// The new AppImage's AppRun sets its own environment; see host_process for why ours is dropped.
 #[cfg(target_os = "linux")]
 fn relaunch_appimage(appimage: &std::ffi::OsStr) {
-    let appdir = std::env::var("APPDIR").unwrap_or_default();
     let mut cmd = std::process::Command::new(appimage);
-    cmd.env_clear();
-    for (key, value) in std::env::vars_os() {
-        match value.to_str() {
-            Some(text) if !appdir.is_empty() && text.contains(&appdir) => {
-                let kept: Vec<&str> = text
-                    .split(':')
-                    .filter(|part| !part.is_empty() && !part.starts_with(&appdir))
-                    .collect();
-                if !kept.is_empty() {
-                    cmd.env(key, kept.join(":"));
-                }
-            }
-            _ => {
-                cmd.env(key, value);
-            }
-        }
-    }
-    // WebKit and the AppImage runtime leave descriptors without CLOEXEC (one of them on the old
-    // mount), which would keep the old runtime and its FUSE mount alive as long as the new app runs.
-    // SAFETY: only async-signal-safe syscalls between fork and exec.
-    unsafe {
-        use std::os::unix::process::CommandExt;
-        cmd.pre_exec(|| {
-            if libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32) != 0 {
-                (3..1024).for_each(|fd| {
-                    libc::close(fd);
-                });
-            }
-            Ok(())
-        });
-    }
+    crate::host_process::use_host_environment(&mut cmd);
     if let Err(err) = cmd.spawn() {
         eprintln!("updater: relaunch failed: {err}");
     }

@@ -1,15 +1,68 @@
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    webview::NewWindowResponse,
     Manager,
 };
 use tauri_plugin_notification::NotificationExt;
 
+#[cfg(target_os = "linux")]
+mod host_process;
 #[cfg(not(debug_assertions))]
 mod updater;
 
 static TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
 static TRAY_BADGE: &[u8] = include_bytes!("../icons/tray-badge.png");
+
+// A click on a link to another site would load it in place of the app, with no way back. It is
+// sent through window.open instead, which `open_new_window` hands to the browser. Navigations
+// the page makes itself (the Google Calendar OAuth redirect) aren't clicks and stay in the window.
+const EXTERNAL_LINKS_SCRIPT: &str = r#"
+addEventListener("click", (event) => {
+  if (event.defaultPrevented || event.button !== 0) return;
+  const link = event.target instanceof Element && event.target.closest("a[href]");
+  if (!link || link.hasAttribute("download")) return;
+  const url = new URL(link.href, location.href);
+  if (!/^(https?|mailto|tel):$/.test(url.protocol) || url.host === location.host) return;
+  event.preventDefault();
+  window.open(url.href, "_blank", "noopener");
+});
+"#;
+
+// teurtask.com and its subdomains (and the dev server) are the app; everything else is outside.
+fn is_app_host(host: &str) -> bool {
+    host == "teurtask.com"
+        || host.ends_with(".teurtask.com")
+        || (cfg!(debug_assertions) && host == "localhost")
+}
+
+// Links that ask for a new window (target="_blank", window.open). The app's own pages replace the
+// current view, since the desktop has a single window; other sites, mail and phone links go to
+// the system browser and handlers, where the user's sessions are. Blank, blob and data windows
+// (a page filling a window it opened) keep the default popup.
+fn open_new_window(app: &tauri::AppHandle, url: tauri::Url) -> NewWindowResponse<tauri::Wry> {
+    match url.scheme() {
+        "http" | "https" if url.host_str().is_some_and(is_app_host) => {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.navigate(url);
+            }
+            NewWindowResponse::Deny
+        }
+        "http" | "https" | "mailto" | "tel" => {
+            #[cfg(target_os = "linux")]
+            host_process::open_url(url.as_str());
+            // Off the main thread: `open` waits up to 250 ms to see whether the launcher failed.
+            #[cfg(not(target_os = "linux"))]
+            std::thread::spawn(move || {
+                if let Err(err) = open::that_detached(url.as_str()) {
+                    eprintln!("open {url}: {err}");
+                }
+            });
+            NewWindowResponse::Deny
+        }
+        _ => NewWindowResponse::Allow,
+    }
+}
 
 #[tauri::command]
 fn send_native_notification(app: tauri::AppHandle, title: String, body: String) {
@@ -73,9 +126,7 @@ fn enable_media_capture(window: &tauri::WebviewWindow) {
                     .nth(1)
                     .and_then(|rest| rest.split(['/', ':']).next())
                     .unwrap_or("");
-                host == "teurtask.com"
-                    || host.ends_with(".teurtask.com")
-                    || (cfg!(debug_assertions) && host == "localhost")
+                is_app_host(host)
             });
             if trusted {
                 request.allow();
@@ -207,7 +258,7 @@ pub fn run() {
     // Read by the web app (utils/desktopEnv.js) before it renders.
     let desktop_env = tauri::plugin::Builder::<tauri::Wry>::new("desktop-env")
         .js_init_script(format!(
-            "window.__TEURTASK_DESKTOP__ = {{ backdropBlur: {backdrop_blur} }};"
+            "window.__TEURTASK_DESKTOP__ = {{ backdropBlur: {backdrop_blur} }};\n{EXTERNAL_LINKS_SCRIPT}"
         ))
         .build();
 
@@ -219,6 +270,12 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![set_tray_badge, send_native_notification])
         .setup(|app| {
+            // Built here rather than from tauri.conf.json ("create": false) to route new windows.
+            let app_handle = app.handle().clone();
+            tauri::WebviewWindowBuilder::from_config(app.handle(), &app.config().app.windows[0])?
+                .on_new_window(move |url, _| open_new_window(&app_handle, url))
+                .build()?;
+
             // ── Window menu ──────────────────────────────────────────────
             let reload = MenuItemBuilder::with_id("reload", "Reload")
                 .accelerator("CmdOrCtrl+R")
