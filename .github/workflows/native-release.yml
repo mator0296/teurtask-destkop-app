@@ -1,0 +1,535 @@
+# Release de TeurTask nativo. Corre en el repo PUBLICO mator0296/teurtask-destkop-app, que guarda
+# las releases y los feeds del updater. El original vive en GitLab (novateva/teurtask-desktop,
+# packaging/github/native-release.yml) y el job `github` de su .gitlab-ci.yml lo copia aqui
+# (.github/workflows/native-release.yml) en cada merge a main: se edita alla, no aqui.
+#
+# Compila aqui porque en un repo publico los runners estandar no gastan cupo de Actions. El codigo
+# sigue privado: cada job clona el espejo privado mator0296/teurtask-desktop con SOURCE_TOKEN
+# (token fino, Contents: read solo sobre ese repo) y sin dejar credenciales en el checkout. Lo que
+# si es publico: los logs (por eso -Awarnings y --message-format=short: un warning o un error de
+# rustc mostraria lineas del codigo) y los artefactos de cada corrida (los mismos binarios que se
+# publican; se borran a los 3 dias). La cache de Swatinem/rust-cache guarda solo dependencias de
+# crates.io: descarta lo compilado de los crates del workspace.
+#
+# Flujo normal: un MR en GitLab sube la version del Cargo.toml; al mergearlo, el job `github`
+# empuja main al espejo y lanza este workflow con publish=true, version y el sha del commit.
+# Compila Linux (AppImage/deb/rpm) y Windows (instalador NSIS + exe crudo), firma todo con la
+# clave minisign del updater de Tauri, genera latest.json (app Tauri vieja) y latest-native.json
+# (app nativa), crea la release v<version> como PRERELEASE y, ya verificada, la promueve a
+# "latest" (los feeds se sirven desde releases/latest/download: desde ahi la reciben las apps
+# instaladas). Sin pasos manuales: toda release que se sube se aprueba sola (decision de
+# 2026-11-11).
+#
+# A mano, sin publicar (compila, prueba, firma y verifica las firmas; deja los artefactos):
+#   gh workflow run native-release.yml -R mator0296/teurtask-destkop-app -f ref=<sha del espejo>
+# Solo quien tiene escritura en este repo puede lanzarlo (no tiene otros disparadores).
+#
+# Secrets: SOURCE_TOKEN, TAURI_SIGNING_PRIVATE_KEY (contenido de teurtask-updater.key) y
+# TAURI_SIGNING_PRIVATE_KEY_PASSWORD. Publica con el GITHUB_TOKEN de este repo.
+#
+# Video embebido (GStreamer, feature `video`): Linux enlaza el del sistema (deb/rpm lo declaran;
+# la AppImage lleva un shim para arrancar sin el); Windows instala la version oficial MSVC,
+# arma con packaging/windows/stage-gstreamer.ps1 la carpeta gstreamer\ que lleva el setup y
+# prueba el exe sin ella y con ella; macOS (job `macos`) solo compila y prueba contra el
+# GStreamer.framework oficial: no se empaqueta ni se publica, y `release` no lo espera.
+#
+# La version sale de [workspace.package] version del Cargo.toml raiz; si se pasa `version`, tiene
+# que coincidir (con publish es obligatoria).
+#
+# Ojo: el nombre no puede ser "Release": `publish-local.sh promote` apaga el workflow con ese nombre
+# (el de la app Tauri vieja, que sigue en este repo deshabilitado).
+name: native-release
+run-name: ${{ inputs.publish && 'publica' || 'prueba' }} ${{ inputs.version }} ${{ inputs.ref }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit del espejo privado (sha completo)
+        required: true
+      version:
+        description: Version esperada en el Cargo.toml (obligatoria con publish)
+        required: false
+        default: ''
+      publish:
+        description: Publicar la release y promoverla a latest
+        type: boolean
+        default: false
+      macos:
+        description: Compilar y probar tambien en macOS (no se publica)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# Dos lanzamientos de la misma version van en fila: el segundo ve la release ya creada.
+concurrency:
+  group: native-release-${{ inputs.version || inputs.ref }}
+  cancel-in-progress: false
+
+env:
+  SRC_REPO: mator0296/teurtask-desktop
+  RELEASE_REPO: mator0296/teurtask-destkop-app
+  OPUS_STATIC: "1"
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+  TEURTASK_UPDATER_ENDPOINT: https://github.com/mator0296/teurtask-destkop-app/releases/latest/download/latest-native.json
+  # Clave PUBLICA minisign (ya publicada en tauri.conf.json de la app Tauri).
+  TEURTASK_UPDATER_PUBKEY: dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE0MzNFMjI2RDBBREQ2QjgKUldTNDFxM1FKdUl6cEZoU0xDWjIyS011cFZpQVBiSHgvNzljc0RKYmVxdTFYWVlYaWxQKzRnL3gK
+  CARGO_TERM_COLOR: always
+  # Logs publicos: sin warnings (traen lineas del codigo). Windows la repite con crt-static.
+  RUSTFLAGS: -Awarnings
+  # GStreamer oficial de Windows y macOS (en Linux, el de ubuntu-22.04: 1.20).
+  GST_VERSION: "1.28.8"
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04 # glibc 2.35: corre en distros mas nuevas
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: mator0296/teurtask-desktop
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          persist-credentials: false
+
+      - name: Version
+        id: ver
+        shell: bash
+        env:
+          WANT: ${{ inputs.version }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          v=$(awk '/^\[workspace\.package\]/{f=1;next} /^\[/{f=0} f && /^version *=/{gsub(/[" ]/,"",$0); sub(/^version=/,"",$0); print; exit}' Cargo.toml)
+          [ -n "$v" ] || { echo "no encuentro la version en Cargo.toml"; exit 1; }
+          if [ -n "$WANT" ] && [ "$WANT" != "$v" ]; then
+            echo "::error::se pidio la version $WANT y el Cargo.toml de ese commit dice $v"; exit 1
+          fi
+          if [ "$PUBLISH" = true ] && [ -z "$WANT" ]; then
+            echo "::error::publish exige la entrada version"; exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Dependencias del sistema
+        run: |
+          sudo apt-get update
+          # La imagen del runner trae libunwind-14-dev (del LLVM preinstalado), que choca con el
+          # libunwind-dev que pide libgstreamer1.0-dev ("held broken packages").
+          if dpkg -s libunwind-14-dev >/dev/null 2>&1; then sudo apt-get remove -y libunwind-14-dev; fi
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config curl \
+            libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libxcb-xkb-dev \
+            libx11-xcb-dev libwayland-dev libvulkan-dev libasound2-dev \
+            libdbus-1-dev libfontconfig-dev libfreetype-dev libssl-dev \
+            libzstd-dev libopus-dev rpm \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb,cargo-generate-rpm
+
+      # `TEURTASK_CRASH_REPORTS=1` enciende el reporte de crashes de la build (crates/app/src/crash.rs):
+      # la app se reporta a TeurTask con la sesion del usuario, sin URL ni secretos compilados.
+      - name: Compilar
+        env:
+          TEURTASK_CRASH_REPORTS: "1"
+        shell: bash
+        run: |
+          cargo build --release -p teurtask-desktop --message-format=short
+
+      # Los tests de components::video::engine (videotestsrc, vp8enc, webmmux, matroskademux,
+      # vp8dec: base + good). REQUIRED: sin GStreamer fallan en vez de saltarse. --release y el
+      # mismo TEURTASK_CRASH_REPORTS: reusa lo que compilo el paso anterior.
+      - name: Tests del video
+        env:
+          TEURTASK_CRASH_REPORTS: "1"
+          TEURTASK_VIDEO_TESTS_REQUIRED: "1"
+        shell: bash
+        run: |
+          cargo test --release -p teurtask-desktop --message-format=short --lib video
+
+      - name: Empaquetar
+        shell: bash
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/release/teurtask "dist/teurtask-linux-bin"
+          packaging/linux/build-appimage.sh target/release/teurtask "$V" "dist/teurtask_${V}_amd64.AppImage"
+          # Sin strip (como el AppImage y el rpm): los nombres de funcion del backtrace de un
+          # panico salen de la tabla de simbolos.
+          cargo deb -p teurtask-desktop --no-build --no-strip --output "dist/teurtask_${V}_amd64.deb"
+          cargo generate-rpm -p crates/app --target-dir target --output "dist/teurtask-${V}-1.x86_64.rpm"
+          rm dist/teurtask-linux-bin
+          # Los paquetes deben llevar bundle-type y reemplazar los archivos de Tauri.
+          dpkg-deb -c "dist/teurtask_${V}_amd64.deb" | tee /tmp/deb.txt
+          grep -q 'usr/lib/teurtask/bundle-type' /tmp/deb.txt
+          grep -q 'usr/bin/teurtask' /tmp/deb.txt
+          dpkg-deb -I "dist/teurtask_${V}_amd64.deb" | grep -E 'Package: teurtask|Depends|Recommends'
+          test "$(dpkg-deb --fsys-tarfile "dist/teurtask_${V}_amd64.deb" | tar -xOf - ./usr/lib/teurtask/bundle-type)" = deb
+          # Los plugins del video no salen de ldd: tienen que estar declarados.
+          dpkg-deb -f "dist/teurtask_${V}_amd64.deb" Depends | grep -q 'gstreamer1.0-plugins-good'
+          rpm -qlp "dist/teurtask-${V}-1.x86_64.rpm" | tee /tmp/rpm.txt
+          grep -q '/usr/lib/teurtask/bundle-type' /tmp/rpm.txt
+          rpm -qp --requires "dist/teurtask-${V}-1.x86_64.rpm" | tee /tmp/rpm-req.txt
+          grep -q 'gstreamer1-plugins-good' /tmp/rpm-req.txt
+          rpm -qp --recommends "dist/teurtask-${V}-1.x86_64.rpm"
+
+      # El shim de la AppImage (packaging/linux/build-appimage.sh): en un ubuntu:22.04 sin
+      # GStreamer, con el resto de lo que enlaza el binario, la AppImage tiene que arrancar. Sin
+      # pantalla la app termina sola o la corta el timeout; lo que no puede salir es «error while
+      # loading shared libraries».
+      - name: AppImage sin GStreamer en el sistema
+        shell: bash
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          "$GITHUB_WORKSPACE/dist/teurtask_${V}_amd64.AppImage" --appimage-extract >/dev/null
+          test -f squashfs-root/usr/lib/teurtask/gst-shim/core/libgstreamer-1.0.so.0
+          docker run --rm -v "$PWD/squashfs-root:/app:ro" ubuntu:22.04 sh -c '
+            set -e
+            apt-get update -qq >/dev/null
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+              libdbus-1-3 libopus0 libasound2 libxcb1 libxkbcommon0 libxkbcommon-x11-0 >/dev/null
+            if ls /usr/lib/x86_64-linux-gnu/libgstreamer-1.0.so.0 2>/dev/null; then
+              echo "el contenedor trae GStreamer: la prueba no sirve"; exit 1
+            fi
+            rc=0
+            out=$(timeout 20 /app/AppRun 2>&1) || rc=$?
+            printf "%s\n" "$out" | tail -n 20
+            echo "AppRun terminó con $rc"
+            if printf "%s\n" "$out" | grep -q "error while loading shared libraries"; then exit 1; fi
+          '
+          rm -rf squashfs-root
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 3
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: mator0296/teurtask-desktop
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          persist-credentials: false
+
+      - name: Version
+        id: ver
+        shell: bash
+        run: |
+          v=$(awk '/^\[workspace\.package\]/{f=1;next} /^\[/{f=0} f && /^version *=/{gsub(/[" ]/,"",$0); sub(/^version=/,"",$0); print; exit}' Cargo.toml)
+          [ -n "$v" ] || { echo "no encuentro la version en Cargo.toml"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # GStreamer oficial MSVC (runtime + devel: DLL, plugins, .lib, .pc y pkg-config). Un solo
+      # instalador Inno Setup de ~500 MB: se guarda instalado en la cache.
+      - name: GStreamer (cache)
+        id: gst-cache
+        uses: actions/cache@v4
+        with:
+          path: C:\gstreamer
+          key: gstreamer-msvc-x86_64-${{ env.GST_VERSION }}
+
+      - name: Instalar GStreamer
+        if: steps.gst-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $url = "https://gstreamer.freedesktop.org/data/pkg/windows/$env:GST_VERSION/msvc/gstreamer-1.0-msvc-x86_64-$env:GST_VERSION.exe"
+          $setup = Join-Path $env:RUNNER_TEMP 'gstreamer-setup.exe'
+          # El servidor de freedesktop corta descargas largas ("response ended prematurely"):
+          # curl reintenta y retoma desde donde quedo (-C -) en vez de empezar de cero.
+          curl.exe -fL --retry 6 --retry-delay 10 --retry-all-errors -C - -o $setup $url
+          if ($LASTEXITCODE -ne 0) { throw "no se pudo bajar $url (curl $LASTEXITCODE)" }
+          $p = Start-Process -Wait -PassThru -FilePath $setup -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TYPE=devel', '/DIR=C:\gstreamer')
+          if ($p.ExitCode -ne 0) { throw "el instalador de GStreamer termino con $($p.ExitCode)" }
+
+      # La raiz es la carpeta con bin\ y lib\ (segun el instalador, C:\gstreamer o
+      # C:\gstreamer\1.0\msvc_x86_64). Solo PKG_CONFIG*: nada de GStreamer en el PATH, asi los
+      # tests prueban que el exe arranca sin el y que runtime_env.rs carga el del setup.
+      - name: Entorno de GStreamer
+        shell: pwsh
+        run: |
+          $inspect = Get-ChildItem C:\gstreamer -Recurse -Filter gst-inspect-1.0.exe | Select-Object -First 1
+          if (-not $inspect) { Get-ChildItem C:\gstreamer -Depth 3 | Out-Host; throw 'no hay gst-inspect-1.0.exe en C:\gstreamer' }
+          $root = Split-Path (Split-Path $inspect.FullName)
+          foreach ($f in 'bin\gstreamer-1.0-0.dll', 'lib\gstreamer-1.0\gstcoreelements.dll', 'lib\pkgconfig\gstreamer-1.0.pc') {
+            if (-not (Test-Path (Join-Path $root $f))) { throw "falta $f en $root (/TYPE=devel no lo trajo?)" }
+          }
+          "GSTREAMER_ROOT=$root" >> $env:GITHUB_ENV
+          "PKG_CONFIG_PATH=$root\lib\pkgconfig" >> $env:GITHUB_ENV
+          if (Test-Path "$root\bin\pkg-config.exe") {
+            "PKG_CONFIG=$root\bin\pkg-config.exe" >> $env:GITHUB_ENV
+          } else {
+            Write-Warning 'GStreamer sin pkg-config.exe: se usa el del PATH'
+          }
+
+      # crt-static: el exe no depende de VCRUNTIME140.dll. Si falla con las bibliotecas C
+      # (opus por cmake, etc.), quitar crt-static y en su lugar incluir vc_redist.x64.exe y
+      # lanzarlo desde el instalador (o exigirlo como requisito).
+      - name: Compilar
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static -Awarnings
+          TEURTASK_CRASH_REPORTS: "1"
+        shell: bash
+        run: |
+          cargo build --release -p teurtask-desktop --message-format=short
+
+      # gst-stage\gstreamer (lo que va a $INSTDIR\gstreamer) y gst-stage\app (runtime de Visual
+      # C++). -Isolate: la prueba de humo corre con C:\gstreamer renombrado.
+      - name: GStreamer del setup
+        shell: pwsh
+        run: |
+          & packaging\windows\stage-gstreamer.ps1 -GstRoot $env:GSTREAMER_ROOT `
+            -Exe target\release\teurtask.exe -Out gst-stage -Isolate
+
+      # Mismos RUSTFLAGS y TEURTASK_CRASH_REPORTS que «Compilar» (reusa lo compilado). Primero
+      # sin GStreamer: el binario de tests tiene las mismas DLL con /DELAYLOAD que teurtask.exe,
+      # asi que si arranca, el exe tambien (y el video cae al respaldo). Despues, con la carpeta
+      # del setup y REQUIRED: los tests del engine fallan si GStreamer no anda.
+      - name: Tests del video
+        shell: pwsh
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static -Awarnings
+          TEURTASK_CRASH_REPORTS: "1"
+        run: |
+          $env:TEURTASK_GSTREAMER_DIR = Join-Path $env:RUNNER_TEMP 'sin-gstreamer'
+          cargo test --release -p teurtask-desktop --message-format=short --lib video
+          if ($LASTEXITCODE -ne 0) { throw 'tests del video sin GStreamer' }
+          $env:TEURTASK_GSTREAMER_DIR = Join-Path $PWD 'gst-stage\gstreamer'
+          $env:TEURTASK_VIDEO_TESTS_REQUIRED = '1'
+          cargo test --release -p teurtask-desktop --message-format=short --lib video
+          if ($LASTEXITCODE -ne 0) { throw 'tests del video con el GStreamer del setup' }
+
+      - name: Instalador NSIS
+        shell: pwsh
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/teurtask.exe "dist/teurtask_${env:V}_x64.exe"
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+            $nsis = "${env:ProgramFiles(x86)}\NSIS"
+            if (-not (Test-Path "$nsis\makensis.exe")) { choco install nsis -y --no-progress }
+            $env:PATH = "$nsis;$env:PATH"
+          }
+          $core = ($env:V -split '[-+]')[0]
+          $v4 = "$core.0"
+          & makensis "/DVERSION=$env:V" "/DVERSION4=$v4" `
+            "/DEXE=$PWD\target\release\teurtask.exe" `
+            "/DGSTREAMER=$PWD\gst-stage" `
+            "/DOUTFILE=$PWD\dist\teurtask_${env:V}_x64-setup.exe" `
+            "/DICON=$PWD\packaging\icons\icon.ico" `
+            packaging\windows\installer.nsi
+          if ($LASTEXITCODE -ne 0) { throw "makensis fallo" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 3
+
+  # Solo compila y prueba el video contra el GStreamer.framework oficial (/Library/Frameworks): no
+  # se empaqueta ni se publica (falta el .app con el framework dentro, el dmg, la firma y la
+  # notarizacion) y `release` no lo espera.
+  macos:
+    if: inputs.macos
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      # Sin esto audiopus_sys encuentra por pkg-config el libopus.dylib del GStreamer.framework y
+      # enlaza fuerte con el: sin el framework dyld aborta antes de main. Asi compila el opus
+      # que trae, estatico, como en Linux y Windows.
+      OPUS_NO_PKG: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: mator0296/teurtask-desktop
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: GStreamer (cache de los .pkg)
+        id: gst-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/gst-pkg
+          key: gstreamer-macos-${{ env.GST_VERSION }}
+
+      - name: Descargar GStreamer
+        if: steps.gst-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/gst-pkg
+          cd ~/gst-pkg
+          base="https://gstreamer.freedesktop.org/data/pkg/osx/${GST_VERSION}"
+          # Reintenta y retoma (-C -): el servidor de freedesktop corta descargas largas.
+          for pkg in "gstreamer-1.0-${GST_VERSION}-universal.pkg" "gstreamer-1.0-devel-${GST_VERSION}-universal.pkg"; do
+            curl -fsSL --retry 6 --retry-delay 10 --retry-all-errors -C - -o "$pkg" "$base/$pkg"
+          done
+
+      - name: Instalar GStreamer
+        shell: bash
+        run: |
+          set -euo pipefail
+          for pkg in ~/gst-pkg/gstreamer-1.0-"${GST_VERSION}"-universal.pkg ~/gst-pkg/gstreamer-1.0-devel-"${GST_VERSION}"-universal.pkg; do
+            sudo installer -pkg "$pkg" -target /
+          done
+          fw=/Library/Frameworks/GStreamer.framework/Versions/1.0
+          test -f "$fw/lib/pkgconfig/gstreamer-1.0.pc"
+          echo "PKG_CONFIG_PATH=$fw/lib/pkgconfig" >> "$GITHUB_ENV"
+          if [ -x "$fw/bin/pkg-config" ]; then echo "PKG_CONFIG=$fw/bin/pkg-config" >> "$GITHUB_ENV"; fi
+
+      - name: Compilar
+        shell: bash
+        run: cargo build --release -p teurtask-desktop --message-format=short
+
+      # build.rs enlaza las bibliotecas del framework con -weak-l: sin el, dyld tiene que saltarlas
+      # (LC_LOAD_WEAK_DYLIB) en vez de matar el proceso antes de main.
+      - name: Enlace debil de GStreamer
+        shell: bash
+        run: |
+          set -euo pipefail
+          otool -l target/release/teurtask | awk '/^ *cmd LC_LOAD/ {cmd=$2} /^ *name / {print cmd, $2}' | tee /tmp/dylibs.txt
+          grep -E 'LC_LOAD_WEAK_DYLIB .*gstreamer' /tmp/dylibs.txt
+          if grep -E '^LC_LOAD_DYLIB .*(GStreamer|libgst|libglib|libgobject|libgmodule|libgio|libintl)' /tmp/dylibs.txt; then
+            echo "::error::bibliotecas de GStreamer enlazadas fuerte: agregarlas a MACOS_WEAK_LIBS (crates/app/build.rs)"
+            exit 1
+          fi
+
+      - name: Tests del video
+        shell: bash
+        env:
+          TEURTASK_VIDEO_TESTS_REQUIRED: "1"
+        run: cargo test --release -p teurtask-desktop --message-format=short --lib video
+
+      # El binario de tests enlaza igual que teurtask: con el framework apartado tiene que arrancar
+      # (y los tests del engine, saltarse). La salida json de cargo no se imprime (trae los
+      # diagnosticos con el codigo): solo se lee la ruta del binario.
+      - name: Sin GStreamer.framework
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin=$(cargo test --release -p teurtask-desktop --lib --no-run --message-format=json \
+            | python3 -c 'import json,sys
+          for line in sys.stdin:
+              m = json.loads(line)
+              if m.get("reason") == "compiler-artifact" and m.get("executable") and m["target"]["kind"] == ["lib"]:
+                  print(m["executable"])' | tail -n 1)
+          test -x "$bin"
+          sudo mv /Library/Frameworks/GStreamer.framework /Library/Frameworks/GStreamer.framework.away
+          trap 'sudo mv /Library/Frameworks/GStreamer.framework.away /Library/Frameworks/GStreamer.framework' EXIT
+          "$bin" video
+
+  # Firma y verifica siempre (asi una prueba sin publicar tambien comprueba la clave); crea y
+  # promueve la release solo con publish.
+  release:
+    needs: [linux, windows]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: mator0296/teurtask-desktop
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Ya publicada?
+        id: exists
+        shell: bash
+        env:
+          V: ${{ needs.linux.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v${V}" -R "$RELEASE_REPO" >/dev/null 2>&1; then
+            echo "::notice::la release v${V} ya existe en ${RELEASE_REPO}; no se publica de nuevo"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Firmar, generar feeds y verificar
+        if: steps.exists.outputs.exists != 'true'
+        shell: bash
+        env:
+          V: ${{ needs.linux.outputs.version }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          ls -l artifacts
+          for f in artifacts/*; do
+            npx -y @tauri-apps/cli@2 signer sign "$f" >/dev/null
+          done
+          python3 tools/release/make-feeds.py "$V" \
+            "https://github.com/${RELEASE_REPO}/releases/download/v${V}" artifacts
+          # Las mismas comprobaciones que publish-local.sh: una firma mala no da error visible,
+          # las apps descartan la actualizacion en silencio.
+          python3 -m pip install --quiet cryptography
+          printf '%s' "$TEURTASK_UPDATER_PUBKEY" > "$RUNNER_TEMP/updater.key.pub"
+          python3 tools/release/verify-sigs.py "$RUNNER_TEMP/updater.key.pub" artifacts
+
+      # Primero prerelease: las apps no la ven hasta que el paso siguiente la promueve, asi
+      # nunca leen una release con los assets a medio subir.
+      - name: Publicar (prerelease)
+        if: inputs.publish && steps.exists.outputs.exists != 'true'
+        shell: bash
+        env:
+          V: ${{ needs.linux.outputs.version }}
+          SRC_SHA: ${{ inputs.ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "v${V}" artifacts/* \
+            -R "$RELEASE_REPO" --title "TeurTask ${V}" \
+            --notes "TeurTask ${V}: la app de escritorio nativa (sin WebView). Compilada desde ${SRC_SHA::9}." \
+            --prerelease --latest=false
+
+      # Corre tambien si la release ya existia (publicada a mano con publish-local.sh).
+      - name: Promover (latest)
+        if: inputs.publish
+        shell: bash
+        env:
+          V: ${{ needs.linux.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Nunca hacia atras: una version vieja no le quita «latest» a la actual.
+          cur=$(gh release view -R "$RELEASE_REPO" --json tagName --jq .tagName 2>/dev/null || true)
+          cur=${cur#v}
+          if [ -n "$cur" ] && [ "$cur" != "$V" ] &&
+             [ "$(printf '%s\n%s\n' "$cur" "$V" | sort -V | tail -n1)" = "$cur" ]; then
+            echo "::warning::v${V} es anterior a la latest (v${cur}): queda como prerelease"
+            exit 0
+          fi
+          REL_REPO="$RELEASE_REPO" bash tools/release/publish-local.sh promote "$V"
