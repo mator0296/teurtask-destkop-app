@@ -358,8 +358,8 @@ jobs:
     timeout-minutes: 60
     env:
       # Sin esto audiopus_sys encuentra por pkg-config el libopus.dylib del GStreamer.framework y
-      # enlaza fuerte con el: sin el framework dyld aborta antes de main. Asi compila el opus
-      # que trae, estatico, como en Linux y Windows.
+      # enlaza fuerte con él: sin el framework dyld aborta antes de main. Así compila el opus
+      # que trae, estático, como en Linux y Windows.
       OPUS_NO_PKG: "1"
     steps:
       - uses: actions/checkout@v4
