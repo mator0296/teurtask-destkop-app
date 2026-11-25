@@ -330,6 +330,20 @@ jobs:
           if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
             $nsis = "${env:ProgramFiles(x86)}\NSIS"
             if (-not (Test-Path "$nsis\makensis.exe")) { choco install nsis -y --no-progress }
+            if (-not (Test-Path "$nsis\makensis.exe")) {
+              # Respaldo si Chocolatey no responde (2.0.17: su feed dio 504 dos corridas seguidas):
+              # el zip portable oficial de SourceForge, fijado por sha256 (sha1 y md5 cotejados con
+              # los que publica SourceForge).
+              $zip = "$env:RUNNER_TEMP\nsis-3.13.zip"
+              Invoke-WebRequest -Uri 'https://downloads.sourceforge.net/project/nsis/NSIS%203/3.13/nsis-3.13.zip' `
+                -OutFile $zip -MaximumRetryCount 3 -RetryIntervalSec 10
+              $sha = (Get-FileHash $zip -Algorithm SHA256).Hash
+              if ($sha -ne 'BA63DFFC4410EE89193E1CB5A41989991BD77C61068DA17E3156D136B7B0B3D8') {
+                throw "sha256 inesperado del zip de NSIS: $sha"
+              }
+              Expand-Archive $zip -DestinationPath "$env:RUNNER_TEMP\nsis" -Force
+              $nsis = "$env:RUNNER_TEMP\nsis\nsis-3.13"
+            }
             $env:PATH = "$nsis;$env:PATH"
           }
           $core = ($env:V -split '[-+]')[0]
